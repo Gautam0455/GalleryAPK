@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Modal,
   View,
@@ -9,6 +9,7 @@ import {
   TouchableOpacity,
   Dimensions,
   StatusBar,
+  ActivityIndicator,
 } from 'react-native';
 import type { Photo } from '../../App';
 
@@ -21,6 +22,30 @@ interface FullScreenViewerProps {
 
 const { width, height } = Dimensions.get('window');
 
+function PhotoPage({ uri }: { uri: string }) {
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  return (
+    <View style={styles.page}>
+      {!loaded && !failed && (
+        <ActivityIndicator style={styles.pageLoader} size="large" color="#fff" />
+      )}
+      {failed ? (
+        <Text style={styles.error}>Unable to load image</Text>
+      ) : (
+        <Image
+          source={{ uri }}
+          style={styles.image}
+          resizeMode="contain"
+          onLoad={() => setLoaded(true)}
+          onError={() => setFailed(true)}
+        />
+      )}
+    </View>
+  );
+}
+
 function FullScreenViewer({ visible, photos, initialIndex, onClose }: FullScreenViewerProps) {
   const listRef = useRef<FlatList<Photo>>(null);
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
@@ -28,6 +53,15 @@ function FullScreenViewer({ visible, photos, initialIndex, onClose }: FullScreen
   useEffect(() => {
     if (visible) setCurrentIndex(initialIndex);
   }, [visible, initialIndex]);
+
+  const getItemLayout = useCallback(
+    (_: ArrayLike<Photo> | null | undefined, index: number) => ({
+      length: width,
+      offset: width * index,
+      index,
+    }),
+    []
+  );
 
   const current = photos[currentIndex];
 
@@ -49,21 +83,24 @@ function FullScreenViewer({ visible, photos, initialIndex, onClose }: FullScreen
           pagingEnabled
           showsHorizontalScrollIndicator={false}
           initialScrollIndex={initialIndex}
-          getItemLayout={(_, index) => ({
-            length: width,
-            offset: width * index,
-            index,
-          })}
+          getItemLayout={getItemLayout}
+          initialNumToRender={1}
+          maxToRenderPerBatch={2}
+          windowSize={3}
+          removeClippedSubviews
+          onScrollToIndexFailed={({ index }) => {
+            // Fallback: jump by offset, then retry once layout is ready.
+            listRef.current?.scrollToOffset({ offset: index * width, animated: false });
+            setTimeout(() => {
+              listRef.current?.scrollToIndex({ index, animated: false });
+            }, 100);
+          }}
           onMomentumScrollEnd={(e) => {
             const idx = Math.round(e.nativeEvent.contentOffset.x / width);
             setCurrentIndex(idx);
           }}
           keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <View style={styles.page}>
-              <Image source={{ uri: item.uri }} style={styles.image} resizeMode="contain" />
-            </View>
-          )}
+          renderItem={({ item }) => <PhotoPage uri={item.uri} />}
         />
 
         <TouchableOpacity style={styles.closeButton} onPress={onClose} hitSlop={12}>
@@ -97,9 +134,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  pageLoader: {
+    position: 'absolute',
+  },
   image: {
     width,
     height: height * 0.85,
+  },
+  error: {
+    color: '#bbb',
+    fontSize: 14,
   },
   closeButton: {
     position: 'absolute',

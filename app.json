@@ -27,7 +27,17 @@
           "savePhotosPermission": "Allow Gallery to save photos.",
           "isAccessMediaLocationEnabled": true
         }
-      ]
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "enableProguardInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true
+          }
+        }
+      ],
+      "./plugins/withReactNativeArchitectures"
     ],
     "extra": {
       "eas": {

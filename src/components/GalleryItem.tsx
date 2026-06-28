@@ -5,32 +5,28 @@ import {
   StyleSheet,
   View,
   ActivityIndicator,
-  Dimensions,
 } from 'react-native';
 import type { Photo } from '../../App';
 
 interface GalleryItemProps {
   photo: Photo;
+  size: number;
   onPress: () => void;
 }
 
-const NUM_COLUMNS = 3;
-const GAP = 2;
-const { width } = Dimensions.get('window');
-const ITEM_SIZE = (width - GAP * 2 * NUM_COLUMNS) / NUM_COLUMNS;
-
-function GalleryItem({ photo, onPress }: GalleryItemProps) {
+function GalleryItem({ photo, size, onPress }: GalleryItemProps) {
   const [loaded, setLoaded] = useState(false);
 
   return (
     <TouchableOpacity
-      style={styles.container}
+      style={[styles.container, { width: size, height: size }]}
       onPress={onPress}
       activeOpacity={0.8}
     >
       <Image
         source={{ uri: photo.uri }}
         style={styles.image}
+        resizeMode="cover"
         onLoadEnd={() => setLoaded(true)}
       />
       {!loaded && (
@@ -44,10 +40,8 @@ function GalleryItem({ photo, onPress }: GalleryItemProps) {
 
 const styles = StyleSheet.create({
   container: {
-    width: ITEM_SIZE,
-    height: ITEM_SIZE,
-    margin: GAP,
-    borderRadius: 6,
+    margin: 2,
+    borderRadius: 4,
     overflow: 'hidden',
     backgroundColor: '#f0f0f0',
   },

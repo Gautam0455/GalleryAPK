@@ -1,13 +1,14 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
+  FlatList,
   ActivityIndicator,
   TouchableOpacity,
   SafeAreaView,
   Platform,
+  Dimensions,
   StatusBar as RNStatusBar,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
@@ -32,6 +33,16 @@ export interface AlbumGroup {
 const PAGE_SIZE = 100; // fetched per request; all pages are loaded
 const CACHE_KEY = 'gallery_cache_v1';
 const LAST_SYNC_KEY = 'gallery_last_sync_v1';
+
+const NUM_COLUMNS = 3;
+const GAP = 2;
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const ITEM_SIZE = Math.floor((SCREEN_WIDTH - GAP * 2 * NUM_COLUMNS) / NUM_COLUMNS);
+
+// Flattened list rows: either an album header or a row of up to 3 photos.
+type ListRow =
+  | { type: 'header'; id: string; title: string; count: number }
+  | { type: 'row'; id: string; photos: Photo[]; albumPhotos: Photo[]; baseIndex: number };
 
 export default function App() {
   const [permission, requestPermission] = MediaLibrary.usePermissions();
@@ -144,13 +155,67 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const openViewer = (photos: Photo[], index: number) => {
+  const openViewer = useCallback((photos: Photo[], index: number) => {
     setViewerPhotos(photos);
     setViewerIndex(index);
     setViewerOpen(true);
-  };
+  }, []);
 
-  const totalPhotos = albums.reduce((sum, a) => sum + a.photos.length, 0);
+  // Build the flattened, virtualization-friendly list once per albums change.
+  const listData = useMemo<ListRow[]>(() => {
+    const rows: ListRow[] = [];
+    for (const album of albums) {
+      rows.push({
+        type: 'header',
+        id: `h_${album.id}`,
+        title: album.title,
+        count: album.photos.length,
+      });
+      for (let i = 0; i < album.photos.length; i += NUM_COLUMNS) {
+        rows.push({
+          type: 'row',
+          id: `${album.id}_${i}`,
+          photos: album.photos.slice(i, i + NUM_COLUMNS),
+          albumPhotos: album.photos,
+          baseIndex: i,
+        });
+      }
+    }
+    return rows;
+  }, [albums]);
+
+  const totalPhotos = useMemo(
+    () => albums.reduce((sum, a) => sum + a.photos.length, 0),
+    [albums]
+  );
+
+  const renderRow = useCallback(
+    ({ item }: { item: ListRow }) => {
+      if (item.type === 'header') {
+        return (
+          <View style={styles.sectionHeader}>
+            <Text style={styles.albumTitle} numberOfLines={1}>
+              {item.title}
+            </Text>
+            <Text style={styles.albumCount}>{item.count}</Text>
+          </View>
+        );
+      }
+      return (
+        <View style={styles.row}>
+          {item.photos.map((photo, j) => (
+            <GalleryItem
+              key={photo.id}
+              photo={photo}
+              size={ITEM_SIZE}
+              onPress={() => openViewer(item.albumPhotos, item.baseIndex + j)}
+            />
+          ))}
+        </View>
+      );
+    },
+    [openViewer]
+  );
 
   const lastSyncLabel = lastSync
     ? new Date(lastSync).toLocaleString()
@@ -223,25 +288,16 @@ export default function App() {
           </TouchableOpacity>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent}>
-          {albums.map((album) => (
-            <View key={album.id} style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.albumTitle}>{album.title}</Text>
-                <Text style={styles.albumCount}>{album.photos.length}</Text>
-              </View>
-              <View style={styles.grid}>
-                {album.photos.map((photo, index) => (
-                  <GalleryItem
-                    key={photo.id}
-                    photo={photo}
-                    onPress={() => openViewer(album.photos, index)}
-                  />
-                ))}
-              </View>
-            </View>
-          ))}
-        </ScrollView>
+        <FlatList
+          data={listData}
+          renderItem={renderRow}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.listContent}
+          initialNumToRender={12}
+          maxToRenderPerBatch={9}
+          windowSize={7}
+          removeClippedSubviews
+        />
       )}
 
       <FullScreenViewer
@@ -334,16 +390,14 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginLeft: 6,
   },
-  scrollContent: {
+  listContent: {
     paddingBottom: 40,
-  },
-  section: {
-    marginTop: 14,
   },
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 14,
+    marginTop: 14,
     marginBottom: 6,
   },
   albumTitle: {
@@ -351,6 +405,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#111',
     marginRight: 8,
+    flexShrink: 1,
   },
   albumCount: {
     fontSize: 12,
@@ -361,9 +416,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     overflow: 'hidden',
   },
-  grid: {
+  row: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    paddingHorizontal: 2,
   },
 });
