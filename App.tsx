@@ -9,10 +9,10 @@ import {
   SafeAreaView,
   Platform,
   StatusBar as RNStatusBar,
-  RefreshControl,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as MediaLibrary from 'expo-media-library';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import GalleryItem from './src/components/GalleryItem';
 import FullScreenViewer from './src/components/FullScreenViewer';
 
@@ -29,74 +29,120 @@ export interface AlbumGroup {
   photos: Photo[];
 }
 
-const ASSETS_PER_ALBUM = 80;
+const PAGE_SIZE = 100; // fetched per request; all pages are loaded
+const CACHE_KEY = 'gallery_cache_v1';
+const LAST_SYNC_KEY = 'gallery_last_sync_v1';
 
 export default function App() {
   const [permission, requestPermission] = MediaLibrary.usePermissions();
   const [albums, setAlbums] = useState<AlbumGroup[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const [loading, setLoading] = useState(true); // initial cache load
+  const [syncing, setSyncing] = useState(false); // active media scan
   const [denied, setDenied] = useState(false);
+  const [lastSync, setLastSync] = useState<number | null>(null);
 
   const [viewerPhotos, setViewerPhotos] = useState<Photo[]>([]);
   const [viewerIndex, setViewerIndex] = useState(0);
   const [viewerOpen, setViewerOpen] = useState(false);
 
-  const loadAlbums = useCallback(async () => {
-    try {
-      const fetched = await MediaLibrary.getAlbumsAsync({ includeSmartAlbums: true });
+  // Scan the device media library and group photos by album (folder).
+  const scanDevice = useCallback(async (): Promise<AlbumGroup[]> => {
+    const fetched = await MediaLibrary.getAlbumsAsync({ includeSmartAlbums: true });
 
-      const groups: AlbumGroup[] = [];
-      for (const album of fetched) {
-        if (!album.assetCount) continue;
+    const groups: AlbumGroup[] = [];
+    for (const album of fetched) {
+      if (!album.assetCount) continue;
+
+      // Page through the album to load EVERY photo (no per-folder limit).
+      const photos: Photo[] = [];
+      let after: string | undefined;
+      let hasNextPage = true;
+      while (hasNextPage) {
         const result = await MediaLibrary.getAssetsAsync({
           album: album.id,
           mediaType: MediaLibrary.MediaType.photo,
-          first: ASSETS_PER_ALBUM,
+          first: PAGE_SIZE,
+          after,
           sortBy: [[MediaLibrary.SortBy.creationTime, false]],
         });
-        if (result.assets.length === 0) continue;
-        groups.push({
-          id: album.id,
-          title: album.title,
-          photos: result.assets.map((a) => ({
+        for (const a of result.assets) {
+          photos.push({
             id: a.id,
             uri: a.uri,
             filename: a.filename,
             album: album.title,
-          })),
-        });
+          });
+        }
+        after = result.endCursor;
+        hasNextPage = result.hasNextPage;
       }
-      groups.sort((a, b) => b.photos.length - a.photos.length);
-      setAlbums(groups);
-    } catch (e) {
-      console.warn('Failed to load albums', e);
+
+      if (photos.length === 0) continue;
+      groups.push({
+        id: album.id,
+        title: album.title,
+        photos,
+      });
     }
+    groups.sort((a, b) => b.photos.length - a.photos.length);
+    return groups;
   }, []);
 
+  // Full sync: request permission, scan, then persist to cache.
+  const sync = useCallback(async () => {
+    setSyncing(true);
+    setDenied(false);
+    try {
+      const perm = permission?.granted ? permission : await requestPermission();
+      if (!perm.granted) {
+        setDenied(true);
+        return;
+      }
+      const groups = await scanDevice();
+      const now = Date.now();
+      setAlbums(groups);
+      setLastSync(now);
+      await AsyncStorage.multiSet([
+        [CACHE_KEY, JSON.stringify(groups)],
+        [LAST_SYNC_KEY, String(now)],
+      ]);
+    } catch (e) {
+      console.warn('Sync failed', e);
+    } finally {
+      setSyncing(false);
+    }
+  }, [permission, requestPermission, scanDevice]);
+
+  // On launch: load from cache instantly. Only auto-sync the first time.
   const init = useCallback(async () => {
     setLoading(true);
-    setDenied(false);
-    const perm = permission?.granted ? permission : await requestPermission();
-    if (!perm.granted) {
-      setDenied(true);
+    try {
+      const [[, cached], [, lastSyncStr]] = await AsyncStorage.multiGet([
+        CACHE_KEY,
+        LAST_SYNC_KEY,
+      ]);
+
+      if (cached) {
+        const groups: AlbumGroup[] = JSON.parse(cached);
+        setAlbums(groups);
+        setLastSync(lastSyncStr ? Number(lastSyncStr) : null);
+        setLoading(false);
+        return; // cached -> no automatic re-sync
+      }
+
+      // First time ever: sync automatically.
       setLoading(false);
-      return;
+      await sync();
+    } catch (e) {
+      console.warn('Init failed', e);
+      setLoading(false);
     }
-    await loadAlbums();
-    setLoading(false);
-  }, [permission, requestPermission, loadAlbums]);
+  }, [sync]);
 
   useEffect(() => {
     init();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await loadAlbums();
-    setRefreshing(false);
-  }, [loadAlbums]);
 
   const openViewer = (photos: Photo[], index: number) => {
     setViewerPhotos(photos);
@@ -106,13 +152,18 @@ export default function App() {
 
   const totalPhotos = albums.reduce((sum, a) => sum + a.photos.length, 0);
 
+  const lastSyncLabel = lastSync
+    ? new Date(lastSync).toLocaleString()
+    : 'Never synced';
+
+  // Initial cache load spinner.
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
         <StatusBar style="dark" />
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#007AFF" />
-          <Text style={styles.centerText}>Loading your photos…</Text>
+          <Text style={styles.centerText}>Loading your gallery…</Text>
         </View>
       </SafeAreaView>
     );
@@ -126,10 +177,10 @@ export default function App() {
           <Text style={styles.emoji}>🔒</Text>
           <Text style={styles.centerTitle}>Photo access needed</Text>
           <Text style={styles.centerText}>
-            Allow access to your photos so the gallery can display them.
+            Allow access to your photos so the gallery can sync and display them.
           </Text>
-          <TouchableOpacity style={styles.button} onPress={init}>
-            <Text style={styles.buttonText}>Grant permission</Text>
+          <TouchableOpacity style={styles.button} onPress={sync}>
+            <Text style={styles.buttonText}>Grant & Sync</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -140,25 +191,39 @@ export default function App() {
     <SafeAreaView style={styles.container}>
       <StatusBar style="dark" />
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Gallery</Text>
-        <Text style={styles.headerCount}>{totalPhotos} photos</Text>
+        <View style={styles.headerLeft}>
+          <Text style={styles.headerTitle}>Gallery</Text>
+          <Text style={styles.headerSub}>
+            {totalPhotos} photos · {lastSyncLabel}
+          </Text>
+        </View>
+        <TouchableOpacity
+          style={[styles.syncButton, syncing && styles.syncButtonDisabled]}
+          onPress={sync}
+          disabled={syncing}
+          activeOpacity={0.8}
+        >
+          {syncing ? (
+            <>
+              <ActivityIndicator size="small" color="#fff" />
+              <Text style={styles.syncText}>Syncing…</Text>
+            </>
+          ) : (
+            <Text style={styles.syncText}>↻ Sync</Text>
+          )}
+        </TouchableOpacity>
       </View>
 
       {albums.length === 0 ? (
         <View style={styles.center}>
           <Text style={styles.emoji}>📷</Text>
           <Text style={styles.centerText}>No photos found on this device</Text>
-          <TouchableOpacity style={styles.button} onPress={onRefresh}>
-            <Text style={styles.buttonText}>Refresh</Text>
+          <TouchableOpacity style={styles.button} onPress={sync} disabled={syncing}>
+            <Text style={styles.buttonText}>{syncing ? 'Syncing…' : 'Sync now'}</Text>
           </TouchableOpacity>
         </View>
       ) : (
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#007AFF" />
-          }
-        >
+        <ScrollView contentContainerStyle={styles.scrollContent}>
           {albums.map((album) => (
             <View key={album.id} style={styles.section}>
               <View style={styles.sectionHeader}>
@@ -231,21 +296,43 @@ const styles = StyleSheet.create({
   },
   header: {
     flexDirection: 'row',
-    alignItems: 'baseline',
+    alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#e5e5e5',
   },
+  headerLeft: {
+    flexShrink: 1,
+  },
   headerTitle: {
-    fontSize: 30,
+    fontSize: 28,
     fontWeight: 'bold',
     color: '#000',
   },
-  headerCount: {
-    fontSize: 14,
+  headerSub: {
+    fontSize: 12,
     color: '#999',
+    marginTop: 2,
+  },
+  syncButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#007AFF',
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderRadius: 20,
+    marginLeft: 12,
+  },
+  syncButtonDisabled: {
+    backgroundColor: '#6db1ff',
+  },
+  syncText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+    marginLeft: 6,
   },
   scrollContent: {
     paddingBottom: 40,

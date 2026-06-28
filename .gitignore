@@ -8,6 +8,11 @@ yarn-error.log*
 # Dependencies
 node_modules/
 
+# Expo
+.expo/
+web-build/
+*.orig.*
+
 # Build output
 dist/
 dist-ssr/

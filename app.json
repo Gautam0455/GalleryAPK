@@ -13,14 +13,7 @@
       "bundleIdentifier": "com.gautam.galleryapp"
     },
     "android": {
-      "package": "com.gautam.galleryapp",
-      "permissions": [
-        "READ_MEDIA_IMAGES",
-        "READ_EXTERNAL_STORAGE",
-        "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.WRITE_EXTERNAL_STORAGE",
-        "android.permission.ACCESS_MEDIA_LOCATION"
-      ]
+      "package": "com.gautam.galleryapp"
     },
     "plugins": [
       [
