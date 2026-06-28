@@ -9,6 +9,7 @@ import {
   SafeAreaView,
   Platform,
   Dimensions,
+  Alert,
   StatusBar as RNStatusBar,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
@@ -55,6 +56,10 @@ export default function App() {
   const [viewerPhotos, setViewerPhotos] = useState<Photo[]>([]);
   const [viewerIndex, setViewerIndex] = useState(0);
   const [viewerOpen, setViewerOpen] = useState(false);
+
+  // Multi-select state
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
 
   // Scan the device media library and group photos by album (folder).
   const scanDevice = useCallback(async (): Promise<AlbumGroup[]> => {
@@ -161,6 +166,112 @@ export default function App() {
     setViewerOpen(true);
   }, []);
 
+  // ---- Delete handling ----
+
+  // Permanently delete the given asset ids from the device, then update state/cache.
+  const deletePhotos = useCallback(async (ids: string[]): Promise<boolean> => {
+    if (ids.length === 0) return false;
+    try {
+      const perm = permission?.granted ? permission : await requestPermission();
+      if (!perm.granted) {
+        Alert.alert('Permission needed', 'Allow photo access to delete photos.');
+        return false;
+      }
+      const deleted = await MediaLibrary.deleteAssetsAsync(ids);
+      if (!deleted) return false;
+
+      const idSet = new Set(ids);
+      setAlbums((prev) => {
+        const next = prev
+          .map((al) => ({ ...al, photos: al.photos.filter((p) => !idSet.has(p.id)) }))
+          .filter((al) => al.photos.length > 0);
+        AsyncStorage.setItem(CACHE_KEY, JSON.stringify(next)).catch(() => {});
+        return next;
+      });
+      return true;
+    } catch (e) {
+      console.warn('Delete failed', e);
+      Alert.alert('Delete failed', 'Could not delete the selected photo(s).');
+      return false;
+    }
+  }, [permission, requestPermission]);
+
+  // Show "Are you sure?" popup, then delete on confirm.
+  const confirmDelete = useCallback(
+    (ids: string[]): Promise<boolean> =>
+      new Promise((resolve) => {
+        const n = ids.length;
+        Alert.alert(
+          n > 1 ? `Delete ${n} photos?` : 'Delete photo?',
+          `Are you sure? This will permanently delete ${
+            n > 1 ? 'these photos' : 'this photo'
+          } from your device.`,
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            {
+              text: 'Delete',
+              style: 'destructive',
+              onPress: async () => resolve(await deletePhotos(ids)),
+            },
+          ],
+          { cancelable: true, onDismiss: () => resolve(false) }
+        );
+      }),
+    [deletePhotos]
+  );
+
+  // ---- Selection handling ----
+
+  const enterSelection = useCallback((id: string) => {
+    setSelectionMode(true);
+    setSelected({ [id]: true });
+  }, []);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelected((prev) => {
+      const next = { ...prev };
+      if (next[id]) delete next[id];
+      else next[id] = true;
+      if (Object.keys(next).length === 0) setSelectionMode(false);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectionMode(false);
+    setSelected({});
+  }, []);
+
+  const selectAll = useCallback(() => {
+    const all: Record<string, boolean> = {};
+    albums.forEach((al) => al.photos.forEach((p) => (all[p.id] = true)));
+    setSelected(all);
+    setSelectionMode(true);
+  }, [albums]);
+
+  const deleteSelected = useCallback(async () => {
+    const ids = Object.keys(selected);
+    if (ids.length === 0) return;
+    const ok = await confirmDelete(ids);
+    if (ok) clearSelection();
+  }, [selected, confirmDelete, clearSelection]);
+
+  // Delete a single photo from the full-screen viewer.
+  const handleViewerDelete = useCallback(
+    async (id: string): Promise<boolean> => {
+      const ok = await confirmDelete([id]);
+      if (ok) {
+        setViewerPhotos((prev) => {
+          const next = prev.filter((p) => p.id !== id);
+          if (next.length === 0) setViewerOpen(false);
+          return next;
+        });
+      }
+      return ok;
+    },
+    [confirmDelete]
+  );
+
   // Build the flattened, virtualization-friendly list once per albums change.
   const listData = useMemo<ListRow[]>(() => {
     const rows: ListRow[] = [];
@@ -189,6 +300,8 @@ export default function App() {
     [albums]
   );
 
+  const selectedCount = Object.keys(selected).length;
+
   const renderRow = useCallback(
     ({ item }: { item: ListRow }) => {
       if (item.type === 'header') {
@@ -208,13 +321,19 @@ export default function App() {
               key={photo.id}
               photo={photo}
               size={ITEM_SIZE}
-              onPress={() => openViewer(item.albumPhotos, item.baseIndex + j)}
+              selectionMode={selectionMode}
+              selected={!!selected[photo.id]}
+              onPress={() => {
+                if (selectionMode) toggleSelect(photo.id);
+                else openViewer(item.albumPhotos, item.baseIndex + j);
+              }}
+              onLongPress={() => enterSelection(photo.id)}
             />
           ))}
         </View>
       );
     },
-    [openViewer]
+    [openViewer, selectionMode, selected, toggleSelect, enterSelection]
   );
 
   const lastSyncLabel = lastSync
@@ -255,29 +374,52 @@ export default function App() {
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="dark" />
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <Text style={styles.headerTitle}>Gallery</Text>
-          <Text style={styles.headerSub}>
-            {totalPhotos} photos · {lastSyncLabel}
-          </Text>
+
+      {selectionMode ? (
+        <View style={styles.header}>
+          <TouchableOpacity onPress={clearSelection} hitSlop={12}>
+            <Text style={styles.headerIcon}>✕</Text>
+          </TouchableOpacity>
+          <Text style={styles.selCount}>{selectedCount} selected</Text>
+          <View style={styles.headerRight}>
+            <TouchableOpacity onPress={selectAll} hitSlop={12} style={styles.headerBtn}>
+              <Text style={styles.headerAction}>Select all</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={deleteSelected}
+              hitSlop={12}
+              style={styles.headerBtn}
+              disabled={selectedCount === 0}
+            >
+              <Text style={[styles.headerAction, styles.deleteAction]}>Delete</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-        <TouchableOpacity
-          style={[styles.syncButton, syncing && styles.syncButtonDisabled]}
-          onPress={sync}
-          disabled={syncing}
-          activeOpacity={0.8}
-        >
-          {syncing ? (
-            <>
-              <ActivityIndicator size="small" color="#fff" />
-              <Text style={styles.syncText}>Syncing…</Text>
-            </>
-          ) : (
-            <Text style={styles.syncText}>↻ Sync</Text>
-          )}
-        </TouchableOpacity>
-      </View>
+      ) : (
+        <View style={styles.header}>
+          <View style={styles.headerLeft}>
+            <Text style={styles.headerTitle}>Gallery</Text>
+            <Text style={styles.headerSub}>
+              {totalPhotos} photos · {lastSyncLabel}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.syncButton, syncing && styles.syncButtonDisabled]}
+            onPress={sync}
+            disabled={syncing}
+            activeOpacity={0.8}
+          >
+            {syncing ? (
+              <>
+                <ActivityIndicator size="small" color="#fff" />
+                <Text style={styles.syncText}>Syncing…</Text>
+              </>
+            ) : (
+              <Text style={styles.syncText}>↻ Sync</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      )}
 
       {albums.length === 0 ? (
         <View style={styles.center}>
@@ -305,6 +447,7 @@ export default function App() {
         photos={viewerPhotos}
         initialIndex={viewerIndex}
         onClose={() => setViewerOpen(false)}
+        onRequestDelete={handleViewerDelete}
       />
     </SafeAreaView>
   );
@@ -356,6 +499,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 12,
+    minHeight: 58,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#e5e5e5',
   },
@@ -371,6 +515,33 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#999',
     marginTop: 2,
+  },
+  headerIcon: {
+    fontSize: 22,
+    color: '#111',
+    fontWeight: '600',
+  },
+  selCount: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#111',
+    flex: 1,
+    marginLeft: 16,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerBtn: {
+    marginLeft: 18,
+  },
+  headerAction: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#007AFF',
+  },
+  deleteAction: {
+    color: '#FF3B30',
   },
   syncButton: {
     flexDirection: 'row',

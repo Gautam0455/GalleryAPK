@@ -5,6 +5,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
+    "icon": "./assets/icon.png",
     "splash": {
       "backgroundColor": "#ffffff",
       "resizeMode": "contain"
@@ -17,7 +18,11 @@
       "bundleIdentifier": "com.gautam.galleryapp"
     },
     "android": {
-      "package": "com.gautam.galleryapp"
+      "package": "com.gautam.galleryapp",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#E7E7E7"
+      }
     },
     "plugins": [
       [
